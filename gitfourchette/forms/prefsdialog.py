@@ -374,10 +374,10 @@ class PrefsDialog(QDialog):
             return control
         elif key == "gitPath":
             presets = {}
+            presets[_("Auto-detected system git")] = ToolPresets.defaultGit(hostOnly=True)
             builtInGit = ToolPresets.flatpakBuiltInGit()
             if builtInGit:
                 presets[_("Built-in git (sandboxed)")] = builtInGit
-            presets[_("Auto-detected system git")] = ToolPresets.defaultGit(hostOnly=True)
             return self.strControlWithPresets(key, value, presets)
         elif issubclass(valueType, enum.Enum):
             return self.enumControl(key, value, type(value))

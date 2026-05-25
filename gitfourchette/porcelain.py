@@ -773,11 +773,10 @@ class Repo(_VanillaRepository):
         """
         assert not _isabs(path)
 
-        parent = self.commondir if common else self.path
-        parent_resolved = _Path(parent).resolve()
-        p = _Path(parent, path).resolve()
+        parent = _Path(self.commondir if common else self.path).resolve()
+        p = (parent / path).resolve()
 
-        if not p.is_relative_to(parent_resolved):
+        if not p.is_relative_to(parent):
             raise ValueError("Won't resolve absolute path outside gitdir")
 
         return str(p)

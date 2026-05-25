@@ -240,8 +240,8 @@ class ToolPresets:
     @classmethod
     def defaultGit(cls, hostOnly=False) -> str:
         return shlex.quote(
-            (not hostOnly and cls.flatpakBuiltInGit())
-            or ToolCommands.which("git")
+            ToolCommands.which("git")
+            or (not hostOnly and cls.flatpakBuiltInGit())
             or "/usr/bin/git")
 
 
