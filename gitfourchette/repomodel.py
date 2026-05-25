@@ -233,10 +233,7 @@ class RepoModel:
 
     @property
     def numUncommittedChanges(self) -> int:
-        if self.workdirStatusReady:
-            return self.workdirNumChanges
-        else:
-            return -1
+        return self.workdirNumChanges
 
     @property
     def numRealCommits(self):

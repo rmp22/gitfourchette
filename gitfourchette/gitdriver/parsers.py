@@ -82,10 +82,11 @@ def parseGitStatus(stdout: str, workdir: str):
         try:
             pattern = _gitStatusPatterns[ident]
         except KeyError:
-            logging.warning(f"unknown git status ident '{ident}'")
-            continue
+            raise ValueError(f"unknown git status ident '{ident}' at offset {pos}")
 
         match = pattern.match(stdout, pos)
+        if match is None:
+            raise ValueError(f"malformed git status entry at offset {pos}")
         pos = match.end()
 
         staged, unstaged = _parseStatusLine(ident, *match.groups())

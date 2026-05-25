@@ -194,17 +194,14 @@ class FileListModel(QAbstractListModel):
         self.navLocator = NavLocator.Empty
         self.modelReset.emit()
 
-    def setContents(self, deltas: Iterable[GitDelta]):
+    def setContents(self, deltas: Iterable[GitDelta], presorted=False):
         self.beginResetModel()
 
-        self.deltas.clear()
-        self.fileRows.clear()
-
-        sortedDeltas = sorted(deltas, key=lambda d: naturalSort(d.new.path))
-
-        for delta in sortedDeltas:
-            self.fileRows[delta.new.path] = len(self.deltas)
-            self.deltas.append(delta)
+        if presorted and isinstance(deltas, list):
+            self.deltas = deltas
+        else:
+            self.deltas = sorted(deltas, key=lambda d: naturalSort(d.new.path))
+        self.fileRows = {delta.new.path: row for row, delta in enumerate(self.deltas)}
 
         self.endResetModel()
 

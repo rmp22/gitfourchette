@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 _submoduleIndexLinePattern = re.compile(r"^index ([\da-f]+)\.\.([\da-f]+)", re.M)
 
 
-def loadWorkdir(task: RepoTask, allowWriteIndex: bool):
+def loadWorkdir(task: RepoTask, allowWriteIndex: bool, untrackedFiles="all", updateDeltas=True):
     """
     Refresh staged/dirty GitDeltas in the RepoModel.
     """
@@ -55,13 +55,28 @@ def loadWorkdir(task: RepoTask, allowWriteIndex: bool):
         "status",
         "--porcelain=v2",
         "-z",
-        "--untracked-files=all")
+        f"--untracked-files={untrackedFiles}")
+    stdout = gitStatus.stdoutBytes()
+    workdir = gitStatus.workingDirectory()
+    repoModel = task.repoModel
 
-    # Get GitDelta lists from 'git status' output
-    numEntries, stagedDeltas, unstagedDeltas = gitStatus.readStatusPorcelainV2Z(headCommitId)
+    yield from task.flowEnterWorkerThread()
+
+    numEntries, stagedDeltas, unstagedDeltas = GitDriver.parseStatusPorcelainV2Z(stdout, workdir, headCommitId)
+    if updateDeltas:
+        stagedDeltas.sort(key=lambda d: naturalSort(d.new.path))
+        unstagedDeltas.sort(key=lambda d: naturalSort(d.new.path))
+    repoModel.repo.refresh_index()
+
+    yield from task.flowEnterUiThread()
 
     if APP_DEBUG:
         assert not any(d.submoduleStatus.startswith("S") for d in stagedDeltas), "only expecting full submo status in unstaged deltas"
+
+    if not updateDeltas:
+        repoModel.workdirNumChanges = numEntries
+        repoModel.workdirStatusReady = False
+        return
 
     # Pre-cache LFS state for unstaged files via `git check-attr` if
     # .gitattributes has any unstaged changes.
@@ -117,7 +132,6 @@ def loadWorkdir(task: RepoTask, allowWriteIndex: bool):
         assert not delta.new.isIdValid(), f"not expecting id to be filled in right after git status: {delta.new.id}"
         delta.new.id = submoduleCommitHash
 
-    repoModel = task.repoModel
     repoModel.workdirUnstagedDeltas = unstagedDeltas
     repoModel.workdirStagedDeltas = stagedDeltas
     repoModel.workdirNumChanges = numEntries
@@ -135,9 +149,6 @@ def loadWorkdir(task: RepoTask, allowWriteIndex: bool):
         if UC_FAKEID in cpf.matchingIds:
             cpf.matchingIds.remove(UC_FAKEID)
             cpf.resultsUpdated.emit()
-
-    # Refresh libgit2 index after git status is complete
-    repoModel.repo.refresh_index()
 
 
 class Jump(RepoTask):
@@ -283,15 +294,14 @@ class Jump(RepoTask):
         # Stale workdir model - force load workdir
         forceDiff = locator.hasFlags(NavFlags.ForceDiff)
         writeIndex = locator.hasFlags(NavFlags.AllowWriteIndex)
-        if forceDiff or repoModel.workdirStale:
+        if forceDiff or repoModel.workdirStale or not repoModel.workdirStatusReady:
             # Load workdir (async)
-            if forceDiff or not repoModel.workdirStatusReady:
-                yield from loadWorkdir(self, allowWriteIndex=writeIndex)
+            yield from loadWorkdir(self, allowWriteIndex=writeIndex)
 
             # Fill FileListViews
             with QSignalBlockerContext(rw.dirtyFiles, rw.stagedFiles):  # Don't emit jump signals
-                rw.dirtyFiles.setContents(repoModel.workdirUnstagedDeltas)
-                rw.stagedFiles.setContents(repoModel.workdirStagedDeltas)
+                rw.dirtyFiles.setContents(repoModel.workdirUnstagedDeltas, presorted=True)
+                rw.stagedFiles.setContents(repoModel.workdirStagedDeltas, presorted=True)
 
             nDirty = rw.dirtyFiles.model().rowCount()
             nStaged = rw.stagedFiles.model().rowCount()
@@ -464,20 +474,22 @@ class Jump(RepoTask):
                 diffAB = commit_diff_pair(commit)
             tokens = GitDriver.buildDiffRawCommand(diffAB)
             driver = yield from self.flowCallGit(*tokens)
-            deltas = driver.readDiffRawZ()
+            stdout = driver.stdoutBytes()
+            summary = commit.message.strip()
 
-            # Fill out source commits
+            yield from self.flowEnterWorkerThread()
+            deltas = GitDriver.parseDiffRawZ(stdout)
             for d in deltas:
                 d.old.sourceCommit = diffAB[0]
                 d.new.sourceCommit = diffAB[1]
-
-            summary = self.repo.peel_commit(locator.commit).message.strip()
+            deltas.sort(key=lambda d: naturalSort(d.new.path))
+            yield from self.flowEnterUiThread()
 
             # Fill committed file list
             with QSignalBlockerContext(flv):  # Don't emit jump signals
                 flv.clear()
                 flv.setCommitLocator(locator)
-                flv.setContents(deltas)
+                flv.setContents(deltas, presorted=True)
                 numChanges = flv.model().rowCount()
 
             # Set header text
@@ -677,6 +689,9 @@ class RefreshRepo(RepoTask):
     def canKill_static(task: RepoTask):
         return task is None or isinstance(task, Jump | RefreshRepo)
 
+    def isFreelyInterruptible(self) -> bool:
+        return True
+
     def canKill(self, task: RepoTask):
         return RefreshRepo.canKill_static(task)
 
@@ -729,7 +744,9 @@ class RefreshRepo(RepoTask):
         if effectFlags & TaskEffects.Head:
             # Refresh the index. Useful in vanilla git mode: git may have touched
             # the index file during the task, so make libgit2 aware of it.
+            yield from self.flowEnterWorkerThread()
             repoModel.repo.refresh_index()
+            yield from self.flowEnterUiThread()
 
         if effectFlags & (TaskEffects.Head | TaskEffects.Workdir):
             submodulesChanged = repoModel.syncSubmodules()
@@ -821,7 +838,7 @@ class RefreshRepo(RepoTask):
         # This is done last so that it doesn't impede on responsivity when the user isn't explicitly looking at the workdir.
         if repoModel.workdirStale:
             assert not jumpToWorkdir, "jumping to workdir should have refreshed the workdir!"
-            yield from loadWorkdir(self, jumpTo.hasFlags(NavFlags.AllowWriteIndex))
+            yield from loadWorkdir(self, jumpTo.hasFlags(NavFlags.AllowWriteIndex), untrackedFiles="normal", updateDeltas=False)
 
         # Update number of staged changes in sidebar and graph
         if repoModel.numUncommittedChanges != pNumUncommittedChanges:

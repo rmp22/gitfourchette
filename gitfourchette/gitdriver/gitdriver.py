@@ -167,7 +167,8 @@ class GitDriver(QProcess):
 
         self.readyReadStandardError.connect(self._onReadyReadStandardError)
         self._stderrScrollback = io.BytesIO()
-        self._stdout = None
+        self._stdoutBytes = None
+        self._stdoutText = None
 
     def stdoutTable(self, pattern: str, linesep="\n", strict=True) -> list:
         stdout = self.stdoutScrollback()
@@ -242,10 +243,15 @@ class GitDriver(QProcess):
             if not line.endswith(b"\r")
         )
 
+    def stdoutBytes(self) -> bytes:
+        if self._stdoutBytes is None:
+            self._stdoutBytes = bytes(self.readAllStandardOutput().data())
+        return self._stdoutBytes
+
     def stdoutScrollback(self) -> str:
-        if self._stdout is None:
-            self._stdout = self.readAllStandardOutput().data().decode("utf-8", errors="replace")
-        return self._stdout
+        if self._stdoutText is None:
+            self._stdoutText = self.stdoutBytes().decode("utf-8", errors="replace")
+        return self._stdoutText
 
     def readPostCommitInfo(self) -> tuple[str, str]:
         # [master 123abc]
@@ -273,9 +279,15 @@ class GitDriver(QProcess):
             for flag, oldHex, newHex, localRef in table
         }
 
-    def readStatusPorcelainV2Z(self, sourceCommit: Oid | None) -> tuple[int, list[GitDelta], list[GitDelta]]:
-        stdout = self.stdoutScrollback()
-        parser = parseGitStatus(stdout, self.workingDirectory())
+    @staticmethod
+    def parseStatusPorcelainV2Z(
+            stdout: bytes | str,
+            workdir: str,
+            sourceCommit: Oid | None,
+    ) -> tuple[int, list[GitDelta], list[GitDelta]]:
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        parser = parseGitStatus(stdout, workdir)
         stagedDeltas = []
         unstagedDeltas = []
         numEntries = 0
@@ -287,6 +299,9 @@ class GitDriver(QProcess):
             if unstaged is not None:
                 unstagedDeltas.append(unstaged)
         return numEntries, stagedDeltas, unstagedDeltas
+
+    def readStatusPorcelainV2Z(self, sourceCommit: Oid | None) -> tuple[int, list[GitDelta], list[GitDelta]]:
+        return GitDriver.parseStatusPorcelainV2Z(self.stdoutBytes(), self.workingDirectory(), sourceCommit)
 
     @classmethod
     def buildDiffRawCommand(cls, delta: tuple[Oid | None, Oid | None]) -> list[str]:
@@ -302,10 +317,15 @@ class GitDriver(QProcess):
             str(b),
         ]
 
-    def readDiffRawZ(self) -> list[GitDelta]:
-        stdout = self.stdoutScrollback()
+    @staticmethod
+    def parseDiffRawZ(stdout: bytes | str) -> list[GitDelta]:
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
         deltas = list(parseGitDiffRawZ(stdout))
         return deltas
+
+    def readDiffRawZ(self) -> list[GitDelta]:
+        return GitDriver.parseDiffRawZ(self.stdoutBytes())
 
     @classmethod
     def buildDiffCommand(

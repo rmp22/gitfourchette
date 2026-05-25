@@ -345,17 +345,19 @@ class LoadPatch(RepoTask):
 
         # Run diff command
         driver = yield from self.flowCallGit(*tokens, autoFail=False)
-        patch = driver.stdoutScrollback()
+        patchBytes = driver.stdoutBytes()
+        stderr = driver.stderrScrollback()
 
         # Don't display large diffs (legacy pygit2 version)
         # TODO: Remove this once we drop support for pygit2 <= 1.19.1
-        if not GitDeltaFile.SupportsFastSizeBallpark and 0 < maxFileSize < len(patch):  # pragma: no cover (old pygit2)
-            return SpecialDiffError.fileTooLarge(len(patch), maxFileSize, locator, image=False, legacy=True)
+        if not GitDeltaFile.SupportsFastSizeBallpark and 0 < maxFileSize < len(patchBytes):  # pragma: no cover (old pygit2)
+            return SpecialDiffError.fileTooLarge(len(patchBytes), maxFileSize, locator, image=False, legacy=True)
 
         # Building the diff document on the background thread lets the user
         # interrupt the task, e.g. if dragging the mouse across many commits.
         yield from self.flowEnterWorkerThread()
 
+        patch = patchBytes.decode("utf-8", errors="replace")
         # Special case for unstaged files: Before loading the patch, update the
         # GitDelta with fresh filesystem stats (st_mtime_ns). This allows
         # bypassing LoadPatch in a future refresh of the UI if the file isn't
@@ -372,7 +374,6 @@ class LoadPatch(RepoTask):
         except DiffDocument.BinaryError:
             return SpecialDiffError.binaryDiff(self.repo, delta, locator)
         except DiffDocument.NoChangeError:
-            stderr = driver.stderrScrollback()
             return SpecialDiffError.noChange(self.repo, delta, stderr)
         except DiffDocument.VeryLongLinesError:
             loadAnywayLoc = locator.withExtraFlags(NavFlags.AllowLargeFiles)

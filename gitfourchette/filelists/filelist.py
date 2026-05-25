@@ -198,8 +198,8 @@ class FileList(QListView):
     def isEmpty(self):
         return self.model().rowCount() == 0
 
-    def setContents(self, deltas: Iterable[GitDelta]):
-        self.flModel.setContents(deltas)
+    def setContents(self, deltas: Iterable[GitDelta], presorted=False):
+        self.flModel.setContents(deltas, presorted=presorted)
         self.updateFocusPolicy()
         self.searchBar.reevaluateSearchTerm()
 
