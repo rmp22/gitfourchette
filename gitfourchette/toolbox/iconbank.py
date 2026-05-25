@@ -54,6 +54,7 @@ def stockIcon(iconId: str, colorTable="") -> QIcon:
     if not _overrideIconIdsReady:
         _overrideIconIds.clear()
         _overrideIconIds.update(_iconOverrideTable())
+        _overrideIconIdsReady = True
     iconId = _overrideIconIds.get(iconId, iconId)
 
     if RecolorSvgIconEngine.IconColors.preferDarkVariants and iconId in _autoDarkVariants:

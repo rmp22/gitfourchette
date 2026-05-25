@@ -43,14 +43,19 @@ class NewStash(RepoTask):
         return TaskPrereqs.NoConflicts | TaskPrereqs.NoUnborn
 
     def flow(self, paths: list[str] | None = None):
+        yield from self.flowEnterWorkerThread()
         status = self.repo.status(untracked_files="all", ignored=False)
+        hadStatus = bool(status)
 
-        if not status:
+        if hadStatus:
+            # Prevent stashing any submodules: remove them from the available files
+            for submodulePath in self.repo.listall_submodules_fast():
+                status.pop(submodulePath, None)
+
+        yield from self.flowEnterUiThread()
+
+        if not hadStatus:
             raise AbortTask(_("There are no uncommitted changes to stash."), "information")
-
-        # Prevent stashing any submodules: remove them from the available files
-        for submodulePath in self.repo.listall_submodules_fast():
-            status.pop(submodulePath, None)
 
         # If the selection only contained submodules, bail here
         if not status:

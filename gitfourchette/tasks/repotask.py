@@ -1190,7 +1190,7 @@ class RepoTaskRunner(QObject):
 class ProcessWrapper(QObject):
     continueCoroutine = Signal()
 
-    SynchronousMaxDelay = 30
+    SynchronousMaxDelay = 0
     """
     Skip the coroutine pause/continuation overhead if the process is able to
     spawn within this delay (in milliseconds). This may reduce the time to
@@ -1222,7 +1222,12 @@ class ProcessWrapper(QObject):
             return
 
         with QSignalConnectContext(process.started, self._onStarted):
-            if not self._didStart and process.state() == QProcess.ProcessState.Starting:
+            if process.state() == QProcess.ProcessState.Running:
+                self._didStart = True
+            elif (process.state() == QProcess.ProcessState.NotRunning
+                  and process.error() != QProcess.ProcessError.FailedToStart):
+                self._didStart = True
+            elif not self._didStart and process.state() == QProcess.ProcessState.Starting:
                 # Pause coroutine until process emits either started or errorOccurred
                 with (
                     QSignalConnectContext(process.started, self.continueCoroutine),
@@ -1253,7 +1258,8 @@ class ProcessWrapper(QObject):
                 # The process is taking a while to finish.
                 # Pause the coroutine until the process exits the Running state.
                 with QSignalConnectContext(process.stateChanged, self.continueCoroutine):
-                    yield FlowControlToken(FlowControlToken.Kind.WaitProcessReady)
+                    if process.state() == QProcess.ProcessState.Running:
+                        yield FlowControlToken(FlowControlToken.Kind.WaitProcessReady)
 
         assert process.state() != QProcess.ProcessState.Running
         exitCode = process.exitCode()

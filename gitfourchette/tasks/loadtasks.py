@@ -71,6 +71,8 @@ class PrimeRepo(RepoTask):
         if not locator:  # Fall back to workdir
             locator = NavLocator(NavContext.WORKDIR).withExtraFlags(NavFlags.AllowWriteIndex)
 
+        yield from self.flowEnterWorkerThread()
+
         # Create the repo
         repo = Repo(path, RepositoryOpenFlag.NO_SEARCH)
 
@@ -79,6 +81,8 @@ class PrimeRepo(RepoTask):
 
         # Create RepoModel
         repoModel = RepoModel(repo)
+
+        yield from self.flowEnterUiThread()
         self.setRepoModel(repoModel)  # required to execute subtasks later
 
         # Fill in superproject
@@ -89,12 +93,13 @@ class PrimeRepo(RepoTask):
         # Fill in ahead/behind
         with Benchmark("ahead-behind"):
             driver = yield from self.flowCallGit("for-each-ref", "--format=%(refname:short) %(upstream:track)", "refs/heads")
-            repoModel.aheadBehind = dict(parseAheadBehind(driver.stdoutScrollback()))
+            aheadBehindText = driver.stdoutScrollback()
 
         # ---------------------------------------------------------------------
         # EXIT UI THREAD
         # ---------------------------------------------------------------------
         yield from self.flowEnterWorkerThread()
+        repoModel.aheadBehind = dict(parseAheadBehind(aheadBehindText))
 
         # Get a locale to format numbers on the worker thread
         locale = QLocale()

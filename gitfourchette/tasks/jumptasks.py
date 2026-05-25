@@ -778,7 +778,11 @@ class RefreshRepo(RepoTask):
             # TODO: This bit is duplicated with PrimeRepo
             with Benchmark("ahead-behind"):
                 driver = yield from self.flowCallGit("for-each-ref", "--format=%(refname:short) %(upstream:track)", "refs/heads")
-                repoModel.aheadBehind = dict(parseAheadBehind(driver.stdoutScrollback()))
+                aheadBehindText = driver.stdoutScrollback()
+                yield from self.flowEnterWorkerThread()
+                aheadBehind = dict(parseAheadBehind(aheadBehindText))
+                yield from self.flowEnterUiThread()
+                repoModel.aheadBehind = aheadBehind
 
         # Schedule a repaint of the entire GraphView if the refs changed
         if effectFlags & (TaskEffects.Head | TaskEffects.Refs):
