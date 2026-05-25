@@ -66,6 +66,12 @@ def formatUpdatedRefs(
     return " ".join([header] + messages)
 
 
+def fetchedRefsChanged(updatedTips: dict[str, tuple[str, Oid, Oid]]) -> bool:
+    return any(
+        ref.startswith("refs/") and flag != VanillaFetchStatusFlag.UpToDate
+        for ref, (flag, *_) in updatedTips.items())
+
+
 class DeleteRemoteBranch(RepoTask):
     def flow(self, remoteBranchShorthand: str):
         assert not remoteBranchShorthand.startswith(RefPrefix.REMOTES)
@@ -169,20 +175,23 @@ class FetchRemotes(RepoTask):
                 _("You can do so via <i>“Repo &rarr; Add Remote”</i>."))
             raise AbortTask(text)
 
-        self.epilog.effects |= TaskEffects.Remotes | TaskEffects.Refs
+        canReadUpdatedRefs = GitDriver.supportsFetchPorcelain()
         driver = yield from self.flowCallGit(
             "fetch",
             "--prune",
             "--progress",
-            *argsIf(GitDriver.supportsFetchPorcelain(), "--porcelain", "--verbose"),
+            *argsIf(canReadUpdatedRefs, "--porcelain", "--verbose"),
             *argsIf(bool(singleRemoteName), "--no-all", singleRemoteName),
             *argsIf(not singleRemoteName, "--all"))
 
         # Old git: no --porcelain support, don't attempt to parse the ref table
-        if not GitDriver.supportsFetchPorcelain():  # pragma: no cover
+        if not canReadUpdatedRefs:  # pragma: no cover
+            self.epilog.effects |= TaskEffects.Refs
             return
 
         updatedRefs = driver.readFetchPorcelainUpdatedRefs()
+        if fetchedRefsChanged(updatedRefs):
+            self.epilog.effects |= TaskEffects.Refs
         self.epilog.status = formatUpdatedRefs(updatedRefs, _("Fetch complete."), skipUpToDate=True)
 
 
@@ -199,21 +208,24 @@ class AutoFetchRemotes(RepoTask):
         if not self.repo.listall_remotes_fast():
             return
 
-        self.epilog.effects |= TaskEffects.Remotes | TaskEffects.Refs
+        canReadUpdatedRefs = GitDriver.supportsFetchPorcelain()
         driver = yield from self.flowCallGit(
             "fetch",
             "--all",
             "--prune",
             "--progress",
-            *argsIf(GitDriver.supportsFetchPorcelain(), "--porcelain", "--verbose"),
+            *argsIf(canReadUpdatedRefs, "--porcelain", "--verbose"),
             autoFail=False)
 
         if driver.exitCode() == 0:
             # Old git: no --porcelain support, don't attempt to parse the ref table
-            if not GitDriver.supportsFetchPorcelain():  # pragma: no cover
+            if not canReadUpdatedRefs:  # pragma: no cover
+                self.epilog.effects |= TaskEffects.Refs
                 return
 
             updatedRefs = driver.readFetchPorcelainUpdatedRefs()
+            if fetchedRefsChanged(updatedRefs):
+                self.epilog.effects |= TaskEffects.Refs
             self.epilog.status = formatUpdatedRefs(updatedRefs, _("Auto-fetch complete."), skipUpToDate=True)
             return
 
@@ -242,22 +254,25 @@ class FetchRemoteBranch(RepoTask):
         remoteName, remoteBranch = split_remote_branch_shorthand(shorthand)
         fullRemoteRef = RefPrefix.REMOTES + shorthand
 
-        self.epilog.effects |= TaskEffects.Remotes | TaskEffects.Refs
+        canReadUpdatedRefs = GitDriver.supportsFetchPorcelain()
 
         driver = yield from self.flowCallGit(
             "fetch",
             "--progress",
             "--no-tags",
-            *argsIf(GitDriver.supportsFetchPorcelain(), "--porcelain", "--verbose"),
+            *argsIf(canReadUpdatedRefs, "--porcelain", "--verbose"),
             remoteName,
             remoteBranch)
 
         # Old git: no --porcelain support, don't attempt to parse the ref table
-        if not GitDriver.supportsFetchPorcelain():  # pragma: no cover
+        if not canReadUpdatedRefs:  # pragma: no cover
+            self.epilog.effects |= TaskEffects.Refs
             return
 
         updatedRefs = driver.readFetchPorcelainUpdatedRefs()
-        flag, oldTarget, newTarget = updatedRefs[fullRemoteRef]
+        flag, _oldTarget, newTarget = updatedRefs[fullRemoteRef]
+        if flag != VanillaFetchStatusFlag.UpToDate:
+            self.epilog.effects |= TaskEffects.Refs
 
         self.epilog.status = formatUpdatedRefs(
             updatedRefs,
