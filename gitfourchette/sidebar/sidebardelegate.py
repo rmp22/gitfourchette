@@ -73,10 +73,10 @@ class SidebarDelegate(QStyledItemDelegate):
         assert view is option.widget
 
         style: QStyle = view.style()
-        isActive = bool(option.state & QStyle.StateFlag.State_Active)
+        hasFocus = view.hasFocus()
         isSelected = bool(option.state & QStyle.StateFlag.State_Selected)
         mouseOver = bool(option.state & QStyle.StateFlag.State_Enabled) and bool(option.state & QStyle.StateFlag.State_MouseOver)
-        colorGroup = QPalette.ColorGroup.Active if isActive else QPalette.ColorGroup.Inactive
+        colorGroup = QPalette.ColorGroup.Normal if hasFocus else QPalette.ColorGroup.Inactive
 
         isExplicitlyShown = False
         isExplicitlyHidden = False
@@ -129,7 +129,10 @@ class SidebarDelegate(QStyledItemDelegate):
             style.drawPrimitive(arrowPrimitive, opt2, painter, view)
 
         # Draw control background
-        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, option, painter, option.widget)
+        backgroundOption = QStyleOptionViewItem(option)
+        backgroundOption.text = ""
+        backgroundOption.icon = QIcon()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, backgroundOption, painter, view)
 
         # Adjust contents
         option.rect.adjust(PADDING, 0, -PADDING, 0)
@@ -138,7 +141,7 @@ class SidebarDelegate(QStyledItemDelegate):
         iconMode = QIcon.Mode.Normal
         if isSelected:
             penColor = option.palette.color(colorGroup, QPalette.ColorRole.HighlightedText)
-            iconMode = QIcon.Mode.Selected if isActive else QIcon.Mode.SelectedInactive
+            iconMode = QIcon.Mode.Selected if hasFocus else QIcon.Mode.SelectedInactive
         elif not node.parent.parent and node.kind != SidebarItem.UncommittedChanges:
             penColor = option.palette.color(colorGroup, QPalette.ColorRole.WindowText)
             penColor.setAlphaF(.66)

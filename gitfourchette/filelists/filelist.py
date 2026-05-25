@@ -36,17 +36,19 @@ class FileListDelegate(QStyledItemDelegate):
     """
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex):
-        widget: FileList = option.widget
-        isActive = bool(option.state & QStyle.StateFlag.State_Active)
+        view: FileList = option.widget
+        assert isinstance(view, FileList)
+        hasFocus = view.hasFocus()
         isSelected = bool(option.state & QStyle.StateFlag.State_Selected)
-        colorGroup = QPalette.ColorGroup.Active if isActive else QPalette.ColorGroup.Inactive
+        style = view.style()
+        colorGroup = QPalette.ColorGroup.Normal if hasFocus else QPalette.ColorGroup.Inactive
 
         # Gather data from model
         icon: QIcon = index.data(Qt.ItemDataRole.DecorationRole)
         emblem: QIcon | None = index.data(FileListModel.Role.Decoration2)
         font: QFont = index.data(Qt.ItemDataRole.FontRole)
         fullText: str = index.data(Qt.ItemDataRole.DisplayRole)
-        searchTerm: str = widget.searchBar.provider.term()
+        searchTerm: str = view.searchBar.provider.term()
 
         # Prepare icon and text rects
         rect = QRect(option.rect)
@@ -59,7 +61,10 @@ class FileListDelegate(QStyledItemDelegate):
         fontMetrics = painter.fontMetrics()
 
         # Draw default background
-        widget.style().drawControl(QStyle.ControlElement.CE_ItemViewItem, option, painter, widget)
+        backgroundOption = QStyleOptionViewItem(option)
+        backgroundOption.text = ""
+        backgroundOption.icon = QIcon()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, backgroundOption, painter, view)
 
         # Draw icon
         for i in [icon, emblem]:
