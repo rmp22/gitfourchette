@@ -30,17 +30,23 @@ logger = logging.getLogger(__name__)
 
 class NewCommit(RepoTask):
     def prereqs(self):
-        return TaskPrereqs.NoConflicts
+        return TaskPrereqs.Nothing
 
     def flow(self):
         from gitfourchette.tasks import Jump
 
         uiPrefs = self.repoModel.prefs
 
+        yield from self.flowEnterWorkerThread()
+        self.checkPrereqs(TaskPrereqs.NoConflicts)
+        yield from self.flowEnterUiThread()
+
         # Jump to workdir
         yield from self.flowSubtask(Jump, NavLocator.inWorkdir())
 
+        yield from self.flowEnterWorkerThread()
         emptyCommit = not self.repo.any_staged_changes
+        yield from self.flowEnterUiThread()
         if emptyCommit:
             text = [_("No files are staged for commit."), _("Do you want to create an empty commit anyway?")]
 
@@ -59,17 +65,21 @@ class NewCommit(RepoTask):
 
         yield from self.flowSubtask(SetUpGitIdentity, _("Proceed to Commit"))
 
+        yield from self.flowEnterWorkerThread()
         repositoryState = self.repo.state()
         fallbackSignature = self.repo.default_signature
-        initialMessage = uiPrefs.draftCommitMessage
         gpgFlag, gpgKey = NewCommit.getGpgConfig(self.repo)
+        detachedHead = self.repo.head_is_detached
+        yield from self.flowEnterUiThread()
+
+        initialMessage = uiPrefs.draftCommitMessage
 
         cd = CommitDialog(
             initialText=initialMessage,
             authorSignature=fallbackSignature,
             committerSignature=fallbackSignature,
             amendingCommitHash="",
-            detachedHead=self.repo.head_is_detached,
+            detachedHead=detachedHead,
             repositoryState=repositoryState,
             emptyCommit=emptyCommit,
             gpgFlag=gpgFlag,
@@ -110,7 +120,7 @@ class NewCommit(RepoTask):
         if cd.result() == QDialog.DialogCode.Rejected:
             raise AbortTask()
 
-        self.epilog.effects |= TaskEffects.Workdir | TaskEffects.Refs | TaskEffects.Head
+        self.epilog.effects |= TaskEffects.Workdir | TaskEffects.Head
         args, env = NewCommit.prepareGitCommand(
             message, author, committer,
             repositoryState=repositoryState,
@@ -184,7 +194,7 @@ class NewCommit(RepoTask):
 
 class AmendCommit(RepoTask):
     def prereqs(self):
-        return TaskPrereqs.NoUnborn | TaskPrereqs.NoConflicts | TaskPrereqs.NoCherrypick
+        return TaskPrereqs.Nothing
 
     def getDraftMessage(self):
         return self.repoModel.prefs.draftAmendMessage
@@ -196,15 +206,22 @@ class AmendCommit(RepoTask):
     def flow(self):
         from gitfourchette.tasks import Jump
 
+        yield from self.flowEnterWorkerThread()
+        self.checkPrereqs(TaskPrereqs.NoUnborn | TaskPrereqs.NoConflicts | TaskPrereqs.NoCherrypick)
+        yield from self.flowEnterUiThread()
+
         # Jump to workdir
         yield from self.flowSubtask(Jump, NavLocator.inWorkdir())
 
         yield from self.flowSubtask(SetUpGitIdentity, _("Proceed to Amend Commit"))
 
+        yield from self.flowEnterWorkerThread()
         repositoryState = self.repo.state()
         headCommit = self.repo.head_commit
         fallbackSignature = self.repo.default_signature
         gpgFlag, gpgKey = NewCommit.getGpgConfig(self.repo)
+        detachedHead = self.repo.head_is_detached
+        yield from self.flowEnterUiThread()
 
         # TODO: Retrieve draft message
         cd = CommitDialog(
@@ -212,8 +229,8 @@ class AmendCommit(RepoTask):
             authorSignature=headCommit.author,
             committerSignature=fallbackSignature,
             amendingCommitHash=shortHash(headCommit.id),
-            detachedHead=self.repo.head_is_detached,
-            repositoryState=self.repo.state(),
+            detachedHead=detachedHead,
+            repositoryState=repositoryState,
             emptyCommit=False,
             gpgFlag=gpgFlag,
             gpgKey=gpgKey,
@@ -238,7 +255,7 @@ class AmendCommit(RepoTask):
         explicitGpgSign = cd.ui.gpg.explicitSign()
         explicitNoGpgSign = cd.ui.gpg.explicitNoSign()
 
-        self.epilog.effects |= TaskEffects.Workdir | TaskEffects.Refs | TaskEffects.Head
+        self.epilog.effects |= TaskEffects.Workdir | TaskEffects.Head
         args, env = NewCommit.prepareGitCommand(
             message, author, committer,
             repositoryState=repositoryState,
@@ -265,12 +282,15 @@ class SetUpGitIdentity(RepoTask):
     def flow(self, okButtonText="", firstRun=True):
         if firstRun:
             # Getting the default signature will fail if the user's identity is missing or incorrectly set
+            yield from self.flowEnterWorkerThread()
             try:
                 _dummy = self.repo.default_signature
                 return
             except (KeyError, ValueError):
                 pass
+            yield from self.flowEnterUiThread()
 
+        yield from self.flowEnterWorkerThread()
         initialName, initialEmail, editLevel = GitConfigHelper.global_identity()
 
         # Fall back to a sensible path if the identity comes from /etc/gitconfig or some other systemwide file
@@ -282,9 +302,11 @@ class SetUpGitIdentity(RepoTask):
                 editLevel = GitConfigLevel.GLOBAL
 
         editPath = GitConfigHelper.path_for_level(editLevel, missing_dir_ok=True)
+        hasLocalIdentity = self.repo.has_local_identity()
+        yield from self.flowEnterUiThread()
 
         dlg = IdentityDialog(firstRun, initialName, initialEmail, editPath,
-                             self.repo.has_local_identity(), self.parentWidget())
+                             hasLocalIdentity, self.parentWidget())
 
         if okButtonText:
             dlg.ui.buttonBox.button(QDialogButtonBox.StandardButton.Ok).setText(okButtonText)
@@ -296,6 +318,7 @@ class SetUpGitIdentity(RepoTask):
         name, email = dlg.identity()
         dlg.deleteLater()
 
+        yield from self.flowEnterWorkerThread()
         configObject = GitConfigHelper.ensure_file(editLevel)
         configObject['user.name'] = name
         configObject['user.email'] = email
