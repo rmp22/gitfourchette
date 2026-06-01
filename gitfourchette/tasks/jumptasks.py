@@ -764,7 +764,8 @@ class RefreshRepo(RepoTask):
 
             refsChanged = repoModel.syncRefs()
             refsChanged |= repoModel.syncMergeheads()
-            stashesChanged = repoModel.syncStashes()
+            if effectFlags & (TaskEffects.Refs | TaskEffects.Remotes):
+                stashesChanged = repoModel.syncStashes()
             homeBranchChanged = oldHeadBranch != repoModel.homeBranch
 
             # Load commits from changed refs only
