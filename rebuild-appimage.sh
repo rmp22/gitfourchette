@@ -6,12 +6,15 @@ usage() {
   cat <<'EOF'
 Usage: ./rebuild-appimage.sh [--skip-deps]
 
-Creates or reuses build/appimage-venv, installs host-side AppImage build tools,
-runs pkg/appimage/build-appimage.sh, and restores gitfourchette/appconsts.py.
+Creates or reuses build/appimage-venv, installs missing host-side AppImage
+build tools, runs pkg/appimage/build-appimage.sh, and restores
+gitfourchette/appconsts.py.
 EOF
 }
 
 SKIP_DEPS=0
+PIP_DEPS=(pip wheel setuptools python-appimage pygit2)
+PYTHON_DEPS=(pip wheel setuptools python_appimage pygit2)
 
 while (($#)); do
   case "$1" in
@@ -47,11 +50,29 @@ restore_appconsts() {
 
 trap restore_appconsts EXIT
 
-python3 -m venv "$VENV"
+deps_installed() {
+  python - "${PYTHON_DEPS[@]}" <<'PY'
+import importlib.util
+import sys
+
+missing = [module for module in sys.argv[1:] if importlib.util.find_spec(module) is None]
+if missing:
+    print("Missing AppImage build deps: " + ", ".join(missing))
+    sys.exit(1)
+PY
+}
+
+if [[ ! -x "$VENV/bin/python" ]]; then
+  python3 -m venv "$VENV"
+fi
 source "$VENV/bin/activate"
 
-if (( ! SKIP_DEPS )); then
-  python -m pip install -U pip wheel setuptools python-appimage pygit2
+if (( SKIP_DEPS )); then
+  echo "Skipping dependency installation."
+elif deps_installed; then
+  echo "AppImage build dependencies already installed."
+else
+  python -m pip install -U "${PIP_DEPS[@]}"
 fi
 
 export PINNED_REQUIREMENTS="${PINNED_REQUIREMENTS:-}"
