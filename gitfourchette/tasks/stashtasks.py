@@ -100,11 +100,14 @@ class NewStash(RepoTask):
 class ApplyStash(RepoTask):
     def prereqs(self):
         # libgit2 will refuse to apply a stash if there are conflicts (NoConflicts)
-        return TaskPrereqs.NoConflicts | TaskPrereqs.NoStagedChanges
+        return TaskPrereqs.Nothing
 
     def flow(self, stashCommitId: Oid, tickDelete=True):
+        yield from self.flowEnterWorkerThread()
+        self.checkPrereqs(TaskPrereqs.NoConflicts | TaskPrereqs.NoStagedChanges)
         stashCommit: Commit = self.repo.peel_commit(stashCommitId)
         stashMessage = strip_stash_message(stashCommit.message)
+        yield from self.flowEnterUiThread()
 
         question = _("Do you want to apply the changes stashed in {0} "
                      "to your working directory?", bquoe(stashMessage))
@@ -130,6 +133,7 @@ class ApplyStash(RepoTask):
         self.epilog.jumpTo = NavLocator.inWorkdir()
         self.epilog.effects |= TaskEffects.Workdir
 
+        yield from self.flowEnterWorkerThread()
         if deleteAfterApply:
             self.epilog.effects |= TaskEffects.Refs
             backupStash(self.repo, stashCommitId)
@@ -139,11 +143,14 @@ class ApplyStash(RepoTask):
         # commit id. So, use a stash number instead.
         stashIndex = self.repo.find_stash_index(stashCommitId)
         popOrApply = "pop" if deleteAfterApply else "apply"
+        yield from self.flowEnterUiThread()
 
         driver = yield from self.flowCallGit("stash", popOrApply, str(stashIndex), autoFail=False)
 
+        yield from self.flowEnterWorkerThread()
         self.repo.refresh_index()
         anyConflicts = self.repo.index.conflicts
+        yield from self.flowEnterUiThread()
 
         if driver.exitCode() == 0:
             if deleteAfterApply:
@@ -169,18 +176,24 @@ class ApplyStash(RepoTask):
 
 class DropStash(RepoTask):
     def flow(self, stashCommitId: Oid):
+        yield from self.flowEnterWorkerThread()
         stashCommit = self.repo.peel_commit(stashCommitId)
         stashMessage = strip_stash_message(stashCommit.message)
+        yield from self.flowEnterUiThread()
+
         yield from self.flowConfirm(
             text=_("Really delete stash {0}?", bquoe(stashMessage)),
             verb=_("Delete stash"),
             buttonIcon="SP_DialogDiscardButton")
 
-        backupStash(self.repo, stashCommitId)
-
         self.epilog.effects |= TaskEffects.Refs
+
+        yield from self.flowEnterWorkerThread()
+        backupStash(self.repo, stashCommitId)
         stashIndex = self.repo.find_stash_index(stashCommitId)
         stashName = f"stash@{{{stashIndex}}}"  # 'git stash drop' doesn't support stash numbers
+        yield from self.flowEnterUiThread()
+
         yield from self.flowCallGit("stash", "drop", stashName)
 
         self.epilog.status = _("Stash {0} deleted.", tquoe(stashMessage))

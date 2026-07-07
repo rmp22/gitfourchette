@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 class SwitchBranch(RepoTask):
     def prereqs(self) -> TaskPrereqs:
-        return TaskPrereqs.NoConflicts
+        return TaskPrereqs.Nothing
 
     def flow(
             self,
@@ -32,9 +32,15 @@ class SwitchBranch(RepoTask):
             refreshUnderDetachedWarning: bool = False):
         assert not newBranch.startswith(RefPrefix.HEADS)
 
+        yield from self.flowEnterWorkerThread()
+        self.checkPrereqs(TaskPrereqs.NoConflicts)
         branchObj: Branch = self.repo.branches.local[newBranch]
+        alreadyCheckedOut = branchObj.is_checked_out()
+        branchTarget = branchObj.target
+        anySubmodules = bool(self.repo.listall_submodules_fast())
+        yield from self.flowEnterUiThread()
 
-        if branchObj.is_checked_out():
+        if alreadyCheckedOut:
             message = _("Branch {0} is already checked out.", bquo(newBranch))
             raise AbortTask(message, 'information')
 
@@ -43,7 +49,6 @@ class SwitchBranch(RepoTask):
             verb = _("Switch")
 
             recurseCheckbox = None
-            anySubmodules = bool(self.repo.listall_submodules_fast())
             if anySubmodules:
                 recurseCheckbox = QCheckBox(_("Update submodules recursively"))
                 recurseCheckbox.setChecked(True)
@@ -52,7 +57,7 @@ class SwitchBranch(RepoTask):
             recurseSubmodules = recurseCheckbox is not None and recurseCheckbox.isChecked()
 
         headId = self.repoModel.headCommitId
-        if self.repoModel.dangerouslyDetachedHead() and branchObj.target != headId:
+        if self.repoModel.dangerouslyDetachedHead() and branchTarget != headId:
             if refreshUnderDetachedWarning:  # Refresh GraphView underneath dialog
                 from gitfourchette.tasks import RefreshRepo
                 yield from self.flowSubtask(RefreshRepo)
@@ -80,7 +85,9 @@ class RenameBranch(RepoTask):
     def flow(self, oldBranchName: str):
         assert not oldBranchName.startswith(RefPrefix.HEADS)
 
+        yield from self.flowEnterWorkerThread()
         forbiddenBranchNames = self.repo.listall_branches(BranchType.LOCAL)
+        yield from self.flowEnterUiThread()
         forbiddenBranchNames.remove(oldBranchName)
 
         nameTaken = _("This name is already taken by another local branch.")
@@ -121,6 +128,7 @@ class RenameBranchFolder(RepoTask):
         assert not oldFolderName.endswith("/")
         oldFolderNameSlash = oldFolderName + "/"
 
+        yield from self.flowEnterWorkerThread()
         forbiddenBranches = set()
         folderBranches = []
         for oldBranchName in self.repo.listall_branches(BranchType.LOCAL):
@@ -128,6 +136,7 @@ class RenameBranchFolder(RepoTask):
                 folderBranches.append(oldBranchName)
             else:
                 forbiddenBranches.add(oldBranchName)
+        yield from self.flowEnterUiThread()
 
         def transformBranchName(branchName: str, newFolderName: str) -> str:
             assert branchName.startswith(oldFolderName)
@@ -190,7 +199,11 @@ class DeleteBranch(RepoTask):
     def flow(self, localBranchName: str):
         assert not localBranchName.startswith(RefPrefix.HEADS)
 
-        if localBranchName == self.repo.head_branch_shorthand:
+        yield from self.flowEnterWorkerThread()
+        isCurrentBranch = localBranchName == self.repo.head_branch_shorthand
+        yield from self.flowEnterUiThread()
+
+        if isCurrentBranch:
             text = paragraphs(
                 _("Cannot delete {0} because it is the current branch.", bquo(localBranchName)),
                 _("Before you try again, switch to another branch."))
@@ -220,15 +233,17 @@ class DeleteBranchFolder(RepoTask):
         assert not folderName.endswith("/")
         folderNameSlash = folderName + "/"
 
+        yield from self.flowEnterWorkerThread()
         currentBranch = self.repo.head_branch_shorthand
+        folderBranches = [b for b in self.repo.listall_branches(BranchType.LOCAL)
+                          if b.startswith(folderNameSlash)]
+        yield from self.flowEnterUiThread()
+
         if currentBranch.startswith(folderNameSlash):
             text = paragraphs(
                 _("Cannot delete folder {0} because it contains the current branch {1}.", bquo(folderName), bquo(currentBranch)),
                 _("Before you try again, switch to another branch."))
             raise AbortTask(text)
-
-        folderBranches = [b for b in self.repo.listall_branches(BranchType.LOCAL)
-                          if b.startswith(folderNameSlash)]
 
         text = paragraphs(
             _("Really delete local branch folder {0}?", bquo(folderName)),
@@ -260,40 +275,51 @@ class NewBranchFromCommit(RepoTask):
         tipHashText = shortHash(tip)
 
         # Are we creating a branch at the tip of the current branch?
-        if not repo.head_is_unborn and not repo.head_is_detached and repo.head.target == tip:
+        yield from self.flowEnterWorkerThread()
+        isAtHead = not repo.head_is_unborn and not repo.head_is_detached and repo.head.target == tip
+        headShorthand = repo.head.shorthand if isAtHead else ""
+        refsInfo = []
+        for r in repo.listall_refs_pointing_at(tip):
+            prefix, shorthand = RefPrefix.split(r)
+            upstreamShorthand = ""
+            if prefix == RefPrefix.HEADS:
+                branch = repo.branches[shorthand]
+                if branch.upstream:
+                    upstreamShorthand = branch.upstream.shorthand
+            refsInfo.append((prefix, shorthand, upstreamShorthand))
+        forbiddenBranchNames = repo.listall_branches(BranchType.LOCAL)
+        commitMessage = repo.get_commit_message(tip)
+        anyConflicts = repo.any_conflicts
+        anySubmodules = bool(repo.listall_submodules_fast())
+        yield from self.flowEnterUiThread()
+
+        if isAtHead:
             # Let user know that's the HEAD
             tipHashText = f"HEAD ({tipHashText})"
 
             # Default to the current branch's name (if no name given)
             if not localName:
-                localName = repo.head.shorthand
+                localName = headShorthand
 
         # Collect upstream names and set initial localName (if we haven't been able to set it above).
-        refsPointingHere = repo.listall_refs_pointing_at(tip)
         upstreams = []
-        for r in refsPointingHere:
-            prefix, shorthand = RefPrefix.split(r)
+        for prefix, shorthand, upstreamShorthand in refsInfo:
             if prefix == RefPrefix.HEADS:
                 if not localName:
                     localName = shorthand
-                branch = repo.branches[shorthand]
-                if branch.upstream:
-                    upstreams.append(branch.upstream.shorthand)
+                if upstreamShorthand:
+                    upstreams.append(upstreamShorthand)
             elif prefix == RefPrefix.REMOTES:
                 if not localName:
                     _prefix, localName = split_remote_branch_shorthand(shorthand)
                 upstreams.append(shorthand)
 
         # Start with a unique name so the branch validator doesn't shout at us
-        forbiddenBranchNames = repo.listall_branches(BranchType.LOCAL)
         localName = withUniqueSuffix(localName, forbiddenBranchNames)
 
         # Ensure no duplicate upstreams (stable order since Python 3.7+)
         upstreams = list(dict.fromkeys(upstreams))
 
-        forbiddenBranchNames = repo.listall_branches(BranchType.LOCAL)
-
-        commitMessage = repo.get_commit_message(tip)
         commitMessage, junk = messageSummary(commitMessage)
 
         dlg = NewBranchDialog(
@@ -302,10 +328,10 @@ class NewBranchFromCommit(RepoTask):
             targetSubtitle=commitMessage,
             upstreams=upstreams,
             reservedNames=forbiddenBranchNames,
-            allowSwitching=not self.repo.any_conflicts,
+            allowSwitching=not anyConflicts,
             parent=self.parentWidget())
 
-        if not repo.listall_submodules_fast():
+        if not anySubmodules:
             dlg.ui.recurseSubmodulesCheckBox.setChecked(False)
             dlg.ui.recurseSubmodulesCheckBox.setVisible(False)
 
@@ -408,10 +434,12 @@ class ResetHead(RepoTask):
         return TaskPrereqs.NoUnborn | TaskPrereqs.NoDetached
 
     def flow(self, onto: Oid):
+        yield from self.flowEnterWorkerThread()
         branchName = self.repo.head_branch_shorthand
         commitMessage = self.repo.get_commit_message(onto)
         submoduleDict = self.repo.listall_submodules_dict()
         hasSubmodules = bool(submoduleDict)
+        yield from self.flowEnterUiThread()
 
         dlg = ResetHeadDialog(onto, branchName, commitMessage, hasSubmodules, parent=self.parentWidget())
 

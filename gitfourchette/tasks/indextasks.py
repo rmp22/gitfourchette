@@ -522,6 +522,7 @@ class RestoreRevisionToWorkdir(RepoTask):
 
         self.epilog.effects |= TaskEffects.Workdir
 
+        yield from self.flowEnterWorkerThread()
         if delete:
             pathObj.unlink()
         else:
@@ -536,6 +537,7 @@ class RestoreRevisionToWorkdir(RepoTask):
 
 class AbortMerge(RepoTask):
     def flow(self):
+        yield from self.flowEnterWorkerThread()
         self.repo.refresh_index()
 
         isMerging = self.repo.state() == RepositoryState.MERGE
@@ -576,6 +578,8 @@ class AbortMerge(RepoTask):
                 n=len(exc.file_exceptions), verb=clause)
             exc.message += " " + _("Please unstage the changes and try again.")
             raise exc
+
+        yield from self.flowEnterUiThread()
 
         lines = [_("Do you want to {0}?", clause)]
 

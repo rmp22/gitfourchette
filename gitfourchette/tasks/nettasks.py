@@ -103,7 +103,9 @@ class RenameRemoteBranch(RepoTask):
         remoteName, branchName = split_remote_branch_shorthand(remoteBranchShorthand)
         newBranchName = branchName  # naked name, NOT prefixed with the name of the remote
 
+        yield from self.flowEnterWorkerThread()
         reservedNames = self.repo.listall_remote_branches().get(remoteName, [])
+        yield from self.flowEnterUiThread()
         with suppress(ValueError):
             reservedNames.remove(branchName)
         nameTaken = _("This name is already taken by another branch on this remote.")
@@ -129,11 +131,13 @@ class RenameRemoteBranch(RepoTask):
         oldRemoteRef = RefPrefix.REMOTES + oldShorthand
 
         # Find local branches using this upstream
+        yield from self.flowEnterWorkerThread()
         adjustUpstreams: list[str] = []
         for lb in repo.branches.local:
             with suppress(KeyError):  # KeyError if upstream branch doesn't exist
                 if repo.branches.local[lb].upstream_name == oldRemoteRef:
                     adjustUpstreams.append(lb)
+        yield from self.flowEnterUiThread()
 
         self.epilog.effects |= TaskEffects.Remotes | TaskEffects.Refs
 
@@ -159,6 +163,7 @@ class RenameRemoteBranch(RepoTask):
             refspec1,
             refspec2)
 
+        yield from self.flowEnterWorkerThread()
         new_remote_branch = repo.branches.remote[remoteName + "/" + newBranchName]
         for lb in adjustUpstreams:
             repo.branches.local[lb].upstream = new_remote_branch

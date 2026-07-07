@@ -331,22 +331,26 @@ class SetUpGitIdentity(RepoTask):
 
 class CheckoutCommit(RepoTask):
     def prereqs(self) -> TaskPrereqs:
-        return TaskPrereqs.NoConflicts
+        return TaskPrereqs.Nothing
 
     def flow(self, oid: Oid):
         from gitfourchette.tasks.branchtasks import SwitchBranch, NewBranchFromCommit, ResetHead, MergeBranch
 
+        yield from self.flowEnterWorkerThread()
+        self.checkPrereqs(TaskPrereqs.NoConflicts)
         refs = self.repo.listall_refs_pointing_at(oid)
         refs = [r for r in refs if r.startswith((RefPrefix.HEADS, RefPrefix.REMOTES))]
-
         commitMessage = self.repo.get_commit_message(oid)
-        commitMessage, junk = messageSummary(commitMessage)
         anySubmodules = bool(self.repo.listall_submodules_fast())
+        currentBranch = self.repo.head_branch_shorthand
+        yield from self.flowEnterUiThread()
+
+        commitMessage, junk = messageSummary(commitMessage)
 
         dlg = CheckoutCommitDialog(
             oid=oid,
             refs=refs,
-            currentBranch=self.repo.head_branch_shorthand,
+            currentBranch=currentBranch,
             anySubmodules=anySubmodules,
             parent=self.parentWidget())
 
@@ -408,11 +412,13 @@ class NewTag(RepoTask):
             yield from self.flowSubtask(SetUpGitIdentity, _("Proceed to New Tag"))
 
         repo = self.repo
+        yield from self.flowEnterWorkerThread()
         if oid is None or oid == NULL_OID:
             oid = repo.head_commit_id
-
         reservedNames = repo.listall_tags()
         commitMessage = repo.get_commit_message(oid)
+        yield from self.flowEnterUiThread()
+
         commitMessage, _dummy = messageSummary(commitMessage)
 
         dlg = NewTagDialog(shortHash(oid), commitMessage, reservedNames,
@@ -485,9 +491,13 @@ class DeleteTag(RepoTask):
 
 class RevertCommit(RepoTask):
     def prereqs(self) -> TaskPrereqs:
-        return TaskPrereqs.NoConflicts | TaskPrereqs.NoStagedChanges
+        return TaskPrereqs.Nothing
 
     def flow(self, oid: Oid):
+        yield from self.flowEnterWorkerThread()
+        self.checkPrereqs(TaskPrereqs.NoConflicts | TaskPrereqs.NoStagedChanges)
+        yield from self.flowEnterUiThread()
+
         text = paragraphs(
             _("Do you want to revert commit {0}?", btag(shortHash(oid))),
             _("You will have an opportunity to review the affected files in your working directory."))
@@ -537,9 +547,13 @@ class RevertCommit(RepoTask):
 class CherrypickCommit(RepoTask):
     def prereqs(self):
         # Prevent cherry-picking with staged changes, like vanilla git (despite libgit2 allowing it)
-        return TaskPrereqs.NoConflicts | TaskPrereqs.NoStagedChanges
+        return TaskPrereqs.Nothing
 
     def flow(self, oid: Oid):
+        yield from self.flowEnterWorkerThread()
+        self.checkPrereqs(TaskPrereqs.NoConflicts | TaskPrereqs.NoStagedChanges)
+        yield from self.flowEnterUiThread()
+
         question = _("Do you want to apply the changes from commit {0} "
                      "to your working directory?", bquo(shortHash(oid)))
         yield from self.flowConfirm(_("Cherry-pick"), question)
